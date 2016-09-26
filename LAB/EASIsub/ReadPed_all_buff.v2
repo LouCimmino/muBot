@@ -1,0 +1,387 @@
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <time.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/timeb.h>
+#include <pthread.h>
+#include "map.h"
+#define PAGE_SIZE (4*1024)
+#define BLOCK_SIZE (4*1024)
+
+int  mem_fd;
+void *gpio_map;
+#define BCM2708_PERI_BASE        0x20000000
+#define GPIO_BASE                (BCM2708_PERI_BASE + 0x200000)
+
+volatile unsigned *gpio;
+
+#define INP_GPIO(g) *(gpio+((g)/10)) &= ~(7<<(((g)%10)*3))
+#define OUT_GPIO(g) *(gpio+((g)/10)) |=  (1<<(((g)%10)*3))
+#define SET_GPIO_ALT(g,a) *(gpio+(((g)/10))) |= (((a)<=3?(a)+4:(a)==4?3:2)<<(((g)%10)*3))
+
+#define GPIO_LEV *(gpio+13)
+
+#define GPIO_SET *(gpio+7)
+#define GPIO_CLR *(gpio+10)
+
+struct arg {
+    unsigned int *buffer;
+	long long int *tss;
+	int size_buffer;
+	int n;
+};
+typedef struct arg arg;
+
+void setup_io();
+void ciclo_clock();
+void delay_clock(int delay);
+void set_pin_output(unsigned short pin);
+unsigned int read_easy(void);
+unsigned int trig(unsigned short pin);
+void send_word(int GPIOpin, unsigned short word_to_send);
+void* fileDownload(void *ptr);
+
+//char *time_stamp(){
+
+//	char *timestamp = (char *)malloc(sizeof(char) * 16);
+//	time_t ltime;
+//	ltime=time(NULL);
+//	struct tm *tm;
+//	tm=localtime(&ltime);
+
+//	sprintf(timestamp,"%04d%02d%02d%02d%02d%02d", tm->tm_year+1900, tm->tm_mon, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+//	return timestamp;
+//}
+
+int mtime_stamp(){
+	struct timeb timer_msec;
+	long long int timestamp_msec; /* timestamp in millisecond. */
+	if (!ftime(&timer_msec)) {
+		timestamp_msec = ((long long int) timer_msec.time) * 1000ll + (long long int) timer_msec.millitm;
+	}
+	else {
+		timestamp_msec = -1;
+	}
+	printf("%lld (msec)\n", timestamp_msec);
+}
+
+long long int mtime_stamp_d(){
+	struct timeb timer_msec_d;
+	long long int timestamp_msec_d; /* timestamp in millisecond. */
+	if (!ftime(&timer_msec_d)) {
+		timestamp_msec_d = ((long long int) timer_msec_d.time) * 1000ll + (long long int) timer_msec_d.millitm;
+	}
+	else {
+		timestamp_msec_d = -1;
+	}
+	return(timestamp_msec_d);
+}
+
+static volatile int thrdTot = 10;
+pthread_t tid;
+
+FILE *f;
+
+int main (int argc, char *argv[])
+{
+	//printf(" START: %s\n",time_stamp());
+	//printf("--- %s ---\n", argv[1]);
+	//printf(" START: ");
+	//mtime_stamp();
+	int addr;
+	long int num_evt;
+	setup_io();
+	set_pin_output(DLAY_CLK);
+	set_pin_output(READ_PIN);
+	set_pin_output(DTK);
+	set_pin_output(CLK);
+	set_pin_output(CHPSEL);
+	set_pin_output(MOSI);
+	set_pin_output(START_FIFO);
+	INP_GPIO(MISO);
+	
+	int gotOne22, gotOne24, pin, i, k, ii;
+	unsigned long int kk;
+	int myCounter22, myCounter24, size_buff, size_buff_tss;
+	int err[thrdTot];
+	int tr = 0;
+	//int count = 0;
+	
+	unsigned int *temp;
+	unsigned int **buff = (unsigned int **) malloc(thrdTot *sizeof(unsigned int));;
+	long long int buff_tss[10000];
+	
+	kk = 0;
+	k = 0;
+	size_buff = 0;
+	buff[tr] = (unsigned int*) malloc(sizeof(unsigned int));
+	num_evt = (int)strtol(argv[1], NULL, 10);
+	GPIO_CLR = 1 << READ_PIN;
+	GPIO_CLR = 1 << CHPSEL;
+	send_word(MOSI, CMD_CTRLWD);
+	send_word(MOSI, CMD_DIAG);
+	GPIO_SET =1 <<CHPSEL;
+	GPIO_SET =1 <<READ_PIN;
+
+	for (;;) {
+		gotOne22 = 0 ;
+		//size_buff = 0;
+		//buff[tr] = (unsigned int*) malloc(sizeof(unsigned int));
+		for (;;) {
+			GPIO_CLR = 1 << READ_PIN;
+			GPIO_CLR = 1 << CHPSEL;
+			send_word(MOSI, CMD_EASY);
+			send_word(MOSI, FUCKTRIG);
+			GPIO_SET =1 <<CHPSEL;
+			GPIO_SET =1 <<READ_PIN;
+			GPIO_SET = 1 << START_FIFO;
+			GPIO_SET = 1 << START_FIFO;
+			GPIO_SET = 1 << START_FIFO;
+			GPIO_SET = 1 << START_FIFO;
+			GPIO_CLR = 1 << START_FIFO;
+			
+			k++;
+			delay_clock(600);
+			for (ii = 2; ii < argc; ii++) {
+				addr = (int)strtol(argv[ii], NULL, 10);
+				GPIO_CLR = 1 << READ_PIN;
+				GPIO_CLR = 1 << CHPSEL;
+				send_word(MOSI, CMD_EASY);
+				send_word(MOSI, CMD_READ | (addr << 10));
+				GPIO_SET =1 <<CHPSEL;
+				GPIO_SET =1 <<READ_PIN;
+			
+				GPIO_SET = 1 << START_FIFO;
+				GPIO_SET = 1 << START_FIFO;
+				GPIO_SET = 1 << START_FIFO;
+				GPIO_SET = 1 << START_FIFO;
+				GPIO_CLR = 1 << START_FIFO;
+			
+				gotOne24 = 0;
+				for (;;) {
+					if (trig(FIFO_READY) == 1) {
+						//printf("FIFO READY\n");
+						buff[tr][size_buff]=read_easy();
+						//printf ("%x\t--->\t", buff[size_buff]);
+						++gotOne24;
+					}
+					if (gotOne24 != 0)
+						break ;
+				}
+				temp = realloc(buff[tr], (2*size_buff+1)*sizeof(unsigned int));
+				if (temp != NULL) {
+					buff[tr] = temp;
+					++size_buff;
+				}
+				gotOne24 = 0;
+				for (;;) {
+					buff[tr][size_buff]=read_easy();
+					//printf ("%x\n", buff[size_buff]);
+					temp = realloc(buff[tr], (2*size_buff+1)*sizeof(unsigned int));
+					if (temp != NULL) {
+						buff[tr] = temp;
+						++size_buff;
+					}
+					if (trig(FIFO_READY) == 0)
+						++gotOne24;
+					if (gotOne24 != 0)
+						break ;
+				}
+			}
+			//printf ("%x\n", buff[size_buff-1]);
+			//++count;
+//-----------------
+			//buff[tr][size_buff]='\n';
+			//temp = realloc(buff[tr], (2*size_buff+1)*sizeof(unsigned int));
+			//if (temp != NULL) {
+			//	buff[tr] = temp;
+			//	++size_buff;
+			//}
+			++gotOne22;
+			kk++;
+			
+			
+			if (gotOne22 != 0)
+				break ;
+		}
+		//printf("%d\n", kk);
+		buff_tss[size_buff_tss] = mtime_stamp_d();
+		++size_buff_tss;
+		if (kk >= num_evt)
+			break;
+	}
+	//for (kk = 0; kk < size_buff; kk++)
+	//	printf ("%x\n",buff[kk]);
+	//printf("  STOP: ");
+	//mtime_stamp();
+	err[tr] = pthread_create(&(tid), NULL, &fileDownload, &(arg){buff[tr], buff_tss, size_buff-1, 1});
+	pthread_join(tid,NULL);
+	if (err[tr] != 0)
+		printf("\nCan't save datas creating thread :[%s]", strerror(err[tr]));
+	else {
+		tr++;
+		if (tr > thrdTot-1) tr = 0;
+	}
+
+	pthread_exit(NULL);
+	return 0 ;
+	
+}
+
+void set_pin_output(unsigned short pin)
+{
+  INP_GPIO(pin);
+  OUT_GPIO(pin);
+}
+
+unsigned int read_easy()
+{
+  int i;
+  unsigned int buffer=0;
+  unsigned int value;
+  unsigned char pin_value ;
+
+  
+  GPIO_SET = 1 << DTK;
+  GPIO_SET = 1 << DTK;
+  GPIO_SET = 1 << DTK;
+  GPIO_SET = 1 << DTK;
+  GPIO_CLR = 1 << DTK;
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_CLR = 1 << CLK;
+  for (i = 30; i>=0; i--)
+    {
+	value = GPIO_LEV;               // reading all 32 pins
+	pin_value = ((value & (1 << MISO)) != 0); // get pin MISO value 
+	buffer|=((pin_value&1)<<i);
+	ciclo_clock();
+    }
+  return(buffer);
+}
+
+
+void setup_io()
+{
+   if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
+      printf("Error no /dev/mem \n");
+      exit(-1);
+   }
+
+   /* mmap GPIO */
+   gpio_map = mmap(
+      NULL,             //Any adddress in our space will do
+      BLOCK_SIZE,       //Map length
+      PROT_READ|PROT_WRITE,// Enable reading & writting to mapped memory
+      MAP_SHARED,       //Shared with other processes
+      mem_fd,           //File to map
+      GPIO_BASE         //Offset to GPIO peripheral
+   );
+
+   close(mem_fd);
+
+   if (gpio_map == MAP_FAILED) {
+      printf("mmap error %d\n", (int)gpio_map);//errno also set!
+      exit(-1);
+   }
+   gpio = (volatile unsigned *)gpio_map;
+}
+
+void ciclo_clock() {
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_SET = 1 << CLK;
+  GPIO_CLR = 1 << CLK;
+}
+
+void send_word(int GPIOpin, unsigned short word_to_send) {
+
+	int bit[16];
+	int i = 0;
+	int modulo;
+	int quoziente;
+	
+	for (i=0; i<16; i++)
+		bit[15-i] = ((word_to_send & 1<<i)>>i);
+
+	GPIO_CLR = 1<<GPIOpin; //DOpening
+
+	for (i=0; i<16; i++) {
+		switch (bit[i]) {
+			case 0:
+				GPIO_CLR = 1<<GPIOpin;
+				break;
+			default :
+				GPIO_SET = 1<<GPIOpin;
+				break;
+		}
+		ciclo_clock();
+	}
+
+	GPIO_CLR = 1<<GPIOpin; //DClosure
+}
+
+void delay_clock(int delay) {
+	int j;
+	for (j = 0; j < delay; j++) {
+		GPIO_SET = 1<<DLAY_CLK;
+		GPIO_CLR = 1<<DLAY_CLK;
+	}
+
+}
+
+unsigned int trig(unsigned short pin)
+{
+  unsigned int value;
+  unsigned char pin_value ;
+
+  INP_GPIO(pin);
+  //GPIO_CLR = 1 << CHPSEL;
+    
+  value = GPIO_LEV;               // reading all 32 pins
+  pin_value = ((value & (1 << pin)) != 0); // get pin MISO value 
+  //GPIO_SET = 1 << CHPSEL;
+  return(pin_value);
+}
+
+void* fileDownload(void *ptr)
+{
+	pthread_t id = pthread_self();
+	
+	char name[20];
+	int i;
+	int j = 1;
+	int k = 1;
+	int l = 0;
+	arg *x = ptr;
+	sprintf(name, "/home/muBot/pedData", x->n);
+	
+    f = fopen(name, "a+");
+
+	while (i <= x->size_buffer) {
+		fprintf(f, "%x\t", x->buffer[i]);
+		++i;
+		++j;
+		++k;
+		if (j == 40) { 
+			fprintf(f, "%lld\n", x->tss[l]);
+			j = 1;
+		}
+		if (k == 480) {
+			l++;
+			k = 1;
+		}
+	}
+	//fprintf(f, "\n");
+    fclose(f);
+	//pthread_exit(NULL);
+	return NULL;
+}

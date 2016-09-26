@@ -1,0 +1,14 @@
+int SCtoHEXSC(unsigned short *hexSC_EASI, unsigned short *SC_EASI);
+int PRtoHEXPR(unsigned short *hexPR_EASI, unsigned short *PR_EASI);
+int initSC_EASI(unsigned short *SC_EASI);
+int HGfeedbackSC_EASI(unsigned short *SC_EASI, unsigned short capValue);
+int DACbiasSC_EASI(unsigned short *SC_EASI, unsigned SipmCh, int DAC8);
+int DACswitchSC_EASI(unsigned short *SC_EASI, unsigned SipmCh, int DACsw);
+int PAMPdisSC_EASI(unsigned short *SC_EASI, unsigned SipmCh, int disable); 
+int TCAPenblSC_EASI(unsigned short *SC_EASI, unsigned SipmCh, int enable);
+int HGtimecSC_EASI(unsigned short *SC_EASI, int timec);
+int DISCRmaskSC_EASI(unsigned short *SC_EASI, unsigned SipmCh, int enable);
+int DAC10thrsSC_EASI(unsigned short *SC_EASI, int DAC10);
+int setPR_EASI(unsigned short *PR_EASI, unsigned SipmCh, unsigned short signal);
+int ReverseSC_EASI(unsigned short *SC_EASI, unsigned short *ReversedSC);
+int ReversePR_EASI(unsigned short *PR_EASI, unsigned short *ReversedPR);
